@@ -1,4 +1,4 @@
-# Grid07 — Phase 1: Core API & Database Setup
+# Assigment — Phase 1: Core API & Database Setup
 
 A Spring Boot 3.x backend service with PostgreSQL and Redis, implementing the foundational entities and REST endpoints for the Grid07 platform.
 

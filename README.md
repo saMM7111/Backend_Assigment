@@ -14,7 +14,7 @@ A Spring Boot 3.x backend service with PostgreSQL and Redis, implementing the fo
 - [Local Setup](#local-setup)
 - [Seed Data](#seed-data)
 - [Postman Collection](#postman-collection)
-- [Upcoming: Phase 2](#upcoming-phase-2)
+- [Phase 2 Approach (Thread Safety)](#phase-2-approach-thread-safety)
 
 ---
 
@@ -229,6 +229,43 @@ Import it via **Postman → File → Import** and point the base URL to `http://
 
 ---
 
-## Upcoming: Phase 2
+## Phase 2 Approach (Thread Safety)
 
-Phase 2 will layer guardrails and rate-limiting on top of this foundation, making use of the Redis connection already established in Phase 1.
+For Phase 2, I treated Redis as the gatekeeper and PostgreSQL as the source of truth.
+
+In simple terms, every risky bot interaction is checked in Redis first (atomic lock rules), and only then persisted in PostgreSQL. This keeps the API stateless and safe under concurrent requests.
+
+### How I guaranteed thread safety for Atomic Locks
+
+1. Horizontal cap (max 100 bot replies per post)
+
+- I use Redis atomic `INCR` on `post:{postId}:bot_count`.
+- Every request gets a unique increment result, even under heavy concurrency.
+- If the incremented value is greater than 100, I reject the request with `429 Too Many Requests` and immediately `DECR` the counter.
+- Because `INCR/DECR` are atomic in Redis, parallel requests cannot bypass this limit.
+
+2. Cooldown cap (same bot cannot target same human twice in 10 minutes)
+
+- I use Redis `SET` with `NX` + TTL 10 minutes (`setIfAbsent(..., Duration.ofMinutes(10))`) on key `cooldown:bot_{id}:human_{id}`.
+- This operation is atomic: only the first concurrent request can create the key.
+- All other concurrent requests for the same bot-human pair fail instantly and return `429`.
+
+3. Vertical cap (max thread depth 20)
+
+- I validate `depthLevel` before writing anything.
+- If `depthLevel > 20`, the request is rejected with `429`.
+
+### Keeping Redis and DB consistent
+
+- Bot guardrails are reserved before writing the comment.
+- If comment save or scoring fails, reservation is rolled back (`bot_count` decremented and cooldown key removed if needed).
+- This rollback prevents stale lock state and keeps Redis counters accurate.
+
+### Virality score (real-time)
+
+- I update `post:{postId}:virality_score` in Redis with atomic increments:
+  - Bot reply: `+1`
+  - Human like: `+20`
+  - Human comment: `+50`
+
+This gives fast real-time scoring while preserving correctness under parallel traffic.

@@ -15,6 +15,7 @@ A Spring Boot 3.x backend service with PostgreSQL and Redis, implementing the fo
 - [Seed Data](#seed-data)
 - [Postman Collection](#postman-collection)
 - [Phase 2 Approach (Thread Safety)](#phase-2-approach-thread-safety)
+- [Phase 3 Approach (Notification Engine)](#phase-3-approach-notification-engine)
 
 ---
 
@@ -27,6 +28,7 @@ Phase 1 establishes the core infrastructure:
 - Three REST endpoints for creating posts, adding comments, and liking posts
 - Input validation with clean, structured error responses
 - Auto-seeded actors (users + bot) for immediate testability
+- Smart Phase 3 notification batching to avoid bot-notification spam
 
 ---
 
@@ -269,3 +271,32 @@ In simple terms, every risky bot interaction is checked in Redis first (atomic l
   - Human comment: `+50`
 
 This gives fast real-time scoring while preserving correctness under parallel traffic.
+
+---
+
+## Phase 3 Approach (Notification Engine)
+
+Phase 3 introduces a Redis-backed notification strategy that reduces spam while still keeping users informed.
+
+### 1. Redis throttler (15-minute cooldown)
+
+When a bot interacts with a user's post, the system checks a cooldown key:
+
+- Cooldown key: `user:{id}:notif_cooldown`
+- If cooldown exists: append a message to `user:{id}:pending_notifs`
+- If cooldown does not exist: log `Push Notification Sent to User` and set cooldown TTL to 15 minutes
+
+This means users do not get flooded with repeated bot push notifications in a short time window.
+
+### 2. Scheduled sweeper (every 5 minutes)
+
+A Spring `@Scheduled` job runs every 5 minutes and scans pending notification lists (`user:*:pending_notifs`).
+
+For each user list, it:
+
+- Pops all queued messages from Redis
+- Counts how many interactions were buffered
+- Logs a summarized message in the format:
+  - `Summarized Push Notification: Bot X and [N] others interacted with your posts.`
+
+This keeps the user experience calm and digestible while preserving interaction visibility.

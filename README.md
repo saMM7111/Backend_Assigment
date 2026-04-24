@@ -16,6 +16,7 @@ A Spring Boot 3.x backend service with PostgreSQL and Redis, implementing the fo
 - [Postman Collection](#postman-collection)
 - [Phase 2 Approach (Thread Safety)](#phase-2-approach-thread-safety)
 - [Phase 3 Approach (Notification Engine)](#phase-3-approach-notification-engine)
+- [Phase 4 Approach (Corner Cases)](#phase-4-approach-corner-cases)
 
 ---
 
@@ -29,6 +30,7 @@ Phase 1 establishes the core infrastructure:
 - Input validation with clean, structured error responses
 - Auto-seeded actors (users + bot) for immediate testability
 - Smart Phase 3 notification batching to avoid bot-notification spam
+- Phase 4 hardening for race conditions, statelessness, and transaction integrity
 
 ---
 
@@ -300,3 +302,42 @@ For each user list, it:
   - `Summarized Push Notification: Bot X and [N] others interacted with your posts.`
 
 This keeps the user experience calm and digestible while preserving interaction visibility.
+
+---
+
+## Phase 4 Approach (Corner Cases)
+
+Phase 4 focuses on proving backend correctness under stress and failure conditions.
+
+### 1. Race condition safety (200 concurrent bot comments)
+
+- The horizontal cap remains Redis-atomic (`INCR` / `DECR`) and blocks requests once the counter exceeds 100.
+- To avoid drift after restarts, the Redis bot-counter key is seeded from PostgreSQL bot-comment count when missing.
+- Result: even under burst concurrency, accepted bot comments for one post are capped at 100.
+
+### 2. Statelessness guarantee
+
+- No in-memory state is used for counters, cooldowns, or notification queues.
+- All guardrails and notification buffers are stored in Redis keys/lists.
+- The application instances remain stateless and horizontally scalable.
+
+### 3. Data integrity between Redis and PostgreSQL
+
+- Redis guardrails are reserved before write attempts.
+- Reservation rollback is now bound to transaction completion status, so failed transactions release Redis reservations safely.
+- Redis side-effects (virality increments and notifications) run after successful DB commit to prevent phantom updates when commits fail.
+
+### 4. Integration test coverage for Phase 4
+
+Integration tests were added in `src/test/java/com/sam/assigment/service/Phase4CornerCasesIT.java` to validate:
+
+- 200 concurrent bot comment attempts produce exactly 100 persisted bot comments
+- Redis reservation rollback on failed bot comment validation
+
+Run the Phase 4 integration suite explicitly with:
+
+```bash
+mvn -Dphase4.it=true -Dtest=Phase4CornerCasesIT test
+```
+
+The tests are opt-in so default local/CI runs are not blocked in environments without Docker.
